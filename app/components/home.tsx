@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+require("../polyfill");
+
+import { useState, useEffect, useRef } from "react";
 
 import { IconButton } from "./button";
 import styles from "./home.module.scss";
@@ -14,25 +16,14 @@ import AddIcon from "../icons/add.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 import CloseIcon from "../icons/close.svg";
 
-import {
-  Message,
-  SubmitKey,
-  useChatStore,
-  ChatSession,
-  BOT_HELLO,
-} from "../store";
-import {
-  copyToClipboard,
-  downloadAs,
-  isMobileScreen,
-  selectOrCopy,
-} from "../utils";
+import { useChatStore } from "../store";
+import { isMobileScreen } from "../utils";
 import Locale from "../locales";
-import { ChatList } from "./chat-list";
 import { Chat } from "./chat";
 
 import dynamic from "next/dynamic";
 import { REPO_URL } from "../constant";
+import { ErrorBoundary } from "./error";
 
 export function Loading(props: { noLogo?: boolean }) {
   return (
@@ -44,6 +35,10 @@ export function Loading(props: { noLogo?: boolean }) {
 }
 
 const Settings = dynamic(async () => (await import("./settings")).Settings, {
+  loading: () => <Loading noLogo />,
+});
+
+const ChatList = dynamic(async () => (await import("./chat-list")).ChatList, {
   loading: () => <Loading noLogo />,
 });
 
@@ -60,12 +55,71 @@ function useSwitchTheme() {
       document.body.classList.add("light");
     }
 
-    const themeColor = getComputedStyle(document.body)
-      .getPropertyValue("--theme-color")
-      .trim();
-    const metaDescription = document.querySelector('meta[name="theme-color"]');
-    metaDescription?.setAttribute("content", themeColor);
+    const metaDescriptionDark = document.querySelector(
+      'meta[name="theme-color"][media]',
+    );
+    const metaDescriptionLight = document.querySelector(
+      'meta[name="theme-color"]:not([media])',
+    );
+
+    if (config.theme === "auto") {
+      metaDescriptionDark?.setAttribute("content", "#151515");
+      metaDescriptionLight?.setAttribute("content", "#fafafa");
+    } else {
+      const themeColor = getComputedStyle(document.body)
+        .getPropertyValue("--theme-color")
+        .trim();
+      metaDescriptionDark?.setAttribute("content", themeColor);
+      metaDescriptionLight?.setAttribute("content", themeColor);
+    }
   }, [config.theme]);
+}
+
+function useDragSideBar() {
+  const limit = (x: number) => Math.min(500, Math.max(220, x));
+
+  const chatStore = useChatStore();
+  const startX = useRef(0);
+  const startDragWidth = useRef(chatStore.config.sidebarWidth ?? 300);
+  const lastUpdateTime = useRef(Date.now());
+
+  const handleMouseMove = useRef((e: MouseEvent) => {
+    if (Date.now() < lastUpdateTime.current + 100) {
+      return;
+    }
+    lastUpdateTime.current = Date.now();
+    const d = e.clientX - startX.current;
+    const nextWidth = limit(startDragWidth.current + d);
+    chatStore.updateConfig((config) => (config.sidebarWidth = nextWidth));
+  });
+
+  const handleMouseUp = useRef(() => {
+    startDragWidth.current = chatStore.config.sidebarWidth ?? 300;
+    window.removeEventListener("mousemove", handleMouseMove.current);
+    window.removeEventListener("mouseup", handleMouseUp.current);
+  });
+
+  const onDragMouseDown = (e: MouseEvent) => {
+    startX.current = e.clientX;
+
+    window.addEventListener("mousemove", handleMouseMove.current);
+    window.addEventListener("mouseup", handleMouseUp.current);
+  };
+
+  useEffect(() => {
+    if (isMobileScreen()) {
+      return;
+    }
+
+    document.documentElement.style.setProperty(
+      "--sidebar-width",
+      `${limit(chatStore.config.sidebarWidth ?? 300)}px`,
+    );
+  }, [chatStore.config.sidebarWidth]);
+
+  return {
+    onDragMouseDown,
+  };
 }
 
 const useHasHydrated = () => {
@@ -78,7 +132,7 @@ const useHasHydrated = () => {
   return hasHydrated;
 };
 
-export function Home() {
+function _Home() {
   const [createNewSession, currentIndex, removeSession] = useChatStore(
     (state) => [
       state.newSession,
@@ -86,12 +140,16 @@ export function Home() {
       state.removeSession,
     ],
   );
+  const chatStore = useChatStore();
   const loading = !useHasHydrated();
   const [showSideBar, setShowSideBar] = useState(true);
 
   // setting
   const [openSettings, setOpenSettings] = useState(false);
   const config = useChatStore((state) => state.config);
+
+  // drag side bar
+  const { onDragMouseDown } = useDragSideBar();
 
   useSwitchTheme();
 
@@ -135,11 +193,7 @@ export function Home() {
             <div className={styles["sidebar-action"] + " " + styles.mobile}>
               <IconButton
                 icon={<CloseIcon />}
-                onClick={() => {
-                  if (confirm(Locale.Home.DeleteChat)) {
-                    removeSession(currentIndex);
-                  }
-                }}
+                onClick={chatStore.deleteSession}
               />
             </div>
             <div className={styles["sidebar-action"]}>
@@ -170,6 +224,11 @@ export function Home() {
             />
           </div>
         </div>
+
+        <div
+          className={styles["sidebar-drag"]}
+          onMouseDown={(e) => onDragMouseDown(e as any)}
+        ></div>
       </div>
 
       <div className={styles["window-content"]}>
@@ -189,5 +248,13 @@ export function Home() {
         )}
       </div>
     </div>
+  );
+}
+
+export function Home() {
+  return (
+    <ErrorBoundary>
+      <_Home></_Home>
+    </ErrorBoundary>
   );
 }
